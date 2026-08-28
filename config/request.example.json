@@ -1,0 +1,66 @@
+{
+  "sequence_name": "my_enzyme",
+  "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAN",
+  "user_request": null,
+  "output_dir": "../outputs/example",
+  "candidate": {
+    "top_k": 32,
+    "allowed_positions": null,
+    "excluded_positions": []
+  },
+  "models": {
+    "ephod": {
+      "repo": "../external/EpHod",
+      "python": "../external/EpHod/.env/bin/python"
+    },
+    "enzgfm": {
+      "repo": "../external/EnzGFM",
+      "python": "../external/EnzGFM/.env/bin/python",
+      "model_location": "../external/EnzGFM/EnzGFM_1.5B"
+    },
+    "unistab": {
+      "repo": "../external/UniStab",
+      "python": "../external/UniStab/.env/bin/python",
+      "checkpoint": "../external/UniStab/checkpoints/model.ckpt"
+    }
+  },
+  "selection": {
+    "target_ph": 7.5,
+    "ph_tolerance": 1.0,
+    "min_activity_proxy": null,
+    "stability_direction": "lower_is_better",
+    "stability_operator": "none",
+    "stability_threshold": null,
+    "weights": {
+      "ph": 0.3,
+      "activity": 0.4,
+      "stability": 0.3
+    },
+    "top_k": 10
+  },
+  "llm": {
+    "enabled": false,
+    "base_url": "https://api.deepseek.com",
+    "parameter_parsing": true,
+    "result_analysis": true,
+    "parameter_model": "deepseek-v4-flash",
+    "analysis_model": "deepseek-v4-pro",
+    "thinking": true,
+    "reasoning_effort": "high",
+    "max_tokens": 4000,
+    "analysis_top_n": 20,
+    "analysis_fail_open": true
+  },
+  "visualization": {
+    "enabled": true
+  },
+  "runtime": {
+    "gpu_id": 0,
+    "timeout_seconds": 7200,
+    "keep_temp": true,
+    "cache_dir": "../cache"
+  },
+  "report": {
+    "language": "zh"
+  }
+}

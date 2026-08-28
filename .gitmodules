@@ -1,0 +1,6 @@
+[submodule "external/UniStab/vendor/openfold"]
+	path = external/UniStab/vendor/openfold
+	url = https://github.com/aqlaboratory/openfold.git
+[submodule "external/UniStab/vendor/dllogger"]
+	path = external/UniStab/vendor/dllogger
+	url = https://github.com/NVIDIA/dllogger.git

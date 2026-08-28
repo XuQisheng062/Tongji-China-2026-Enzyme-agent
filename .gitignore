@@ -1,0 +1,99 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+.venv/
+external/*/.env/
+external/*/.gcc9/
+
+cache/
+outputs/
+wheels/
+
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.pkl
+*.whl
+
+external/UniStab/vendor/openfold/build/
+external/UniStab/vendor/openfold/*.so
+external/UniStab/vendor/openfold/*.egg-info/
+
+*.log
+*.tmp
+.DS_Store
+.vscode/
+.idea/
+
+# =========================
+# Runtime outputs / cache
+# =========================
+outputs/
+cache/
+logs/
+tmp/
+
+# =========================
+# Python
+# =========================
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+# Local configs / secrets
+# =========================
+.env
+.env.*
+config/test.json
+
+# =========================
+# Model weights / checkpoints
+# =========================
+external/EnzGFM/EnzGFM_1.5B/
+external/EnzGFM/EnzGFM_1.5B.zip
+
+external/**/checkpoints/
+external/**/*.ckpt
+external/**/*.pt
+external/**/*.pth
+external/**/*.bin
+external/**/*.safetensors
+
+# =========================
+# External virtual envs
+# =========================
+external/**/.env/
+external/**/.venv/
+
+# =========================
+# CUDA / compiled build files
+# =========================
+external/**/build/
+external/**/*.so
+external/**/*.o
+external/**/*.a
+external/**/.gcc9/
+
+# =========================
+# Local patch packages
+# =========================
+*.zip
+PATCH_MANIFEST.txt
+
+# =========================
+# Editor / OS
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

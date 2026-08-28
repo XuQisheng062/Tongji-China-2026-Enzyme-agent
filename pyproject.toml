@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixed-enzyme-agent"
+version = "0.5.0"
+description = "Typed plug-in enzyme engineering agent with validated DeepSeek workflow planning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24,<3",
+    "pandas>=2.0,<3",
+    "matplotlib>=3.7,<4",
+    "openai>=1.30,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+fixed-enzyme-agent = "fixed_enzyme_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
