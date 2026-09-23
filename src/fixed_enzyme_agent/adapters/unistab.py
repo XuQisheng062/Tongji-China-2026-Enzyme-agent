@@ -36,21 +36,55 @@ class UniStabAdapter:
         env: dict[str, str],
         timeout: int,
         force_cpu: bool,
+        batch_size: int = 1,
     ) -> dict[str, float]:
+        records = [
+            {
+                "name": name,
+                "parent_sequence": wt_sequence,
+                "mutant_sequence": mutant_sequence,
+            }
+            for name, mutant_sequence in mutants.items()
+        ]
+        return self.predict_ddg_batch(
+            records,
+            work_dir=work_dir,
+            env=env,
+            timeout=timeout,
+            force_cpu=force_cpu,
+            batch_size=batch_size,
+        )
+
+    def predict_ddg_batch(
+        self,
+        records: list[dict[str, str]],
+        *,
+        work_dir: Path,
+        env: dict[str, str],
+        timeout: int,
+        force_cpu: bool,
+        batch_size: int = 1,
+    ) -> dict[str, float]:
+        if not records:
+            return {}
+        if int(batch_size) <= 0:
+            raise ValueError("UniStab batch_size must be greater than zero")
         work_dir.mkdir(parents=True, exist_ok=True)
         in_csv = work_dir / "unistab_input.csv"
-        names = list(mutants)
+        names = [record["name"] for record in records]
+        if len(names) != len(set(names)):
+            raise ValueError("UniStab record names must be unique")
         with in_csv.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["WT_name", "ddG_ML", "mut_seq", "wt_seq"])
             writer.writeheader()
-            for name in names:
+            for record in records:
                 # Upstream UniversalMutationDataset requires a finite ddG_ML target even for inference.
                 # We use a dummy 0.0 target and only consume predictions.
                 writer.writerow({
-                    "WT_name": name,
+                    "WT_name": record["name"],
                     "ddG_ML": 0.0,
-                    "mut_seq": mutants[name],
-                    "wt_seq": wt_sequence,
+                    "mut_seq": record["mutant_sequence"],
+                    "wt_seq": record["parent_sequence"],
                 })
         out_dir = work_dir / "output"
         device = "cpu" if force_cpu else "cuda:0"
@@ -62,7 +96,7 @@ class UniStabAdapter:
             "--data", str(in_csv),
             "--output", str(out_dir),
             "--name", run_name,
-            "--batch_size", "1",
+            "--batch_size", str(int(batch_size)),
             "--device", device,
         ]
         # UniStab inference imports modules from both repo root and src/.

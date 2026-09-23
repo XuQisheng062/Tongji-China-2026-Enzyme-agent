@@ -4,10 +4,44 @@ from pathlib import Path
 import csv
 
 from ..adapters import EnzGFMAdapter, EpHodAdapter, UniStabAdapter
+from ..bioformats import BioArtifact, BioRecord, SCHEMA_VERSION
 from ..codon_optimization import resolve_codon_optimization_request, write_codon_optimization_outputs
 from ..runner import build_env
 from ..types import Candidate
 from .base import AgentTool, ToolContext, ToolHealth, ToolSpec
+
+
+def _artifact(context: ToolContext) -> BioArtifact:
+    value = context.artifacts["artifact"]
+    if not isinstance(value, BioArtifact):
+        raise TypeError(f"Model tools require {SCHEMA_VERSION}")
+    return value
+
+
+def _reference_and_mutants(artifact: BioArtifact) -> tuple[BioRecord, list[BioRecord]]:
+    if not artifact.records:
+        raise ValueError("Artifact contains no sequence records")
+    reference_id = artifact.data.get("reference_id")
+    reference = next((record for record in artifact.records
+                      if record.id == reference_id or record.annotations.get("role") == "reference"),
+                     artifact.records[0])
+    if reference.molecule_type != "protein":
+        raise ValueError(
+            "Current enzyme prediction models require protein records; "
+            "translate or select a CDS before execution"
+        )
+    mutants = [record for record in artifact.records if record is not reference]
+    return reference, mutants
+
+
+def _mutation_label(reference: str, mutant: str) -> str:
+    if len(reference) != len(mutant):
+        raise ValueError("Reference and mutant sequences must have equal length")
+    parts = [f"{wt}{index}{mt}" for index, (wt, mt) in
+             enumerate(zip(reference, mutant), start=1) if wt != mt]
+    if not parts:
+        raise ValueError("Mutant sequence is identical to the reference")
+    return ":".join(parts)
 
 
 def _runtime(context: ToolContext) -> tuple[dict[str, str], int, bool]:
@@ -25,8 +59,10 @@ class EnzGFMTool(AgentTool):
     spec = ToolSpec(
         "enzgfm", "1.0", "Mutation activity proxy provider",
         ("mutation_effect_prediction", "activity_ranking"),
-        ("protein_sequence", "mutation_list"), ("activity_scores",),
-        properties={"batch": True, "gpu": True, "offline": True},
+        ("artifact",), ("artifact",),
+        properties={"batch": True, "gpu": True, "offline": True,
+                    "molecule_types": ["protein"]},
+        artifact_contract=SCHEMA_VERSION,
     )
 
     def __init__(self, model_config: dict):
@@ -39,20 +75,28 @@ class EnzGFMTool(AgentTool):
         return ToolHealth(not errors, tuple(errors))
 
     def run(self, context: ToolContext):
+        artifact = _artifact(context)
+        reference, mutants = _reference_and_mutants(artifact)
+        mutations = [record.annotations.get("mutation") or
+                     _mutation_label(reference.sequence, record.sequence) for record in mutants]
         env, timeout, force_cpu = _runtime(context)
         scores = self.adapter.score_mutations(
-            context.artifacts["protein_sequence"], context.artifacts["mutation_list"],
+            reference.sequence, mutations,
             work_dir=context.run_dir / context.step_id, env=env, timeout=timeout,
             force_cpu=force_cpu,
         )
-        return {"activity_scores": scores}
+        output = artifact.clone()
+        output.data["activity_scores"] = scores
+        return {"artifact": output}
 
 
 class EpHodTool(AgentTool):
     spec = ToolSpec(
         "ephod", "1.0", "Protein optimum pH prediction provider",
-        ("ph_prediction",), ("protein_sequences",), ("ph_predictions",),
-        properties={"batch": True, "gpu": False, "offline": True},
+        ("ph_prediction",), ("artifact",), ("artifact",),
+        properties={"batch": True, "gpu": False, "offline": True,
+                    "molecule_types": ["protein"]},
+        artifact_contract=SCHEMA_VERSION,
     )
 
     def __init__(self, model_config: dict):
@@ -63,20 +107,24 @@ class EpHodTool(AgentTool):
         return ToolHealth(not errors, tuple(errors))
 
     def run(self, context: ToolContext):
+        artifact = _artifact(context)
         env, timeout, _ = _runtime(context)
         values = self.adapter.predict(
-            context.artifacts["protein_sequences"],
+            {record.id: record.sequence for record in artifact.records},
             work_dir=context.run_dir / context.step_id, env=env, timeout=timeout,
         )
-        return {"ph_predictions": values}
+        output = artifact.clone()
+        output.data["ph_predictions"] = values
+        return {"artifact": output}
 
 
 class UniStabTool(AgentTool):
     spec = ToolSpec(
         "unistab", "1.0", "Mutation stability prediction provider",
-        ("stability_prediction",), ("protein_sequence", "mutant_sequences"),
-        ("stability_predictions",),
-        properties={"batch": True, "gpu": True, "offline": True},
+        ("stability_prediction",), ("artifact",), ("artifact",),
+        properties={"batch": True, "gpu": True, "offline": True,
+                    "molecule_types": ["protein"]},
+        artifact_contract=SCHEMA_VERSION,
     )
 
     def __init__(self, model_config: dict):
@@ -89,22 +137,28 @@ class UniStabTool(AgentTool):
         return ToolHealth(not errors, tuple(errors))
 
     def run(self, context: ToolContext):
+        artifact = _artifact(context)
+        reference, mutants = _reference_and_mutants(artifact)
         env, timeout, force_cpu = _runtime(context)
         values = self.adapter.predict_ddg(
-            context.artifacts["protein_sequence"], context.artifacts["mutant_sequences"],
+            reference.sequence, {record.id: record.sequence for record in mutants},
             work_dir=context.run_dir / context.step_id, env=env, timeout=timeout,
             force_cpu=force_cpu,
+            batch_size=int(context.config.get("models", {}).get("unistab", {}).get("batch_size", 1)),
         )
-        return {"stability_predictions": values}
+        output = artifact.clone()
+        output.data["stability_predictions"] = values
+        return {"artifact": output}
 
 
 class CodonOptimizationTool(AgentTool):
     spec = ToolSpec(
         "codon_optimizer", "1.0", "Multi-host synonymous codon optimization provider",
         ("codon_optimization",),
-        ("protein_sequence", "selected_candidates", "host_organisms"),
-        ("optimized_cds_set", "codon_optimization_result"),
-        properties={"batch": True, "gpu": False, "network": "optional", "offline_builtin_hosts": True},
+        ("artifact",), ("artifact",),
+        properties={"batch": True, "gpu": False, "network": "optional",
+                    "offline_builtin_hosts": True, "molecule_types": ["protein"]},
+        artifact_contract=SCHEMA_VERSION,
     )
 
     @staticmethod
@@ -118,8 +172,10 @@ class CodonOptimizationTool(AgentTool):
         return candidate
 
     def run(self, context: ToolContext):
-        wt_sequence = str(context.artifacts["protein_sequence"])
-        hosts = context.artifacts["host_organisms"]
+        artifact = _artifact(context)
+        reference, mutants = _reference_and_mutants(artifact)
+        wt_sequence = reference.sequence
+        hosts = artifact.data.get("host_organisms", [])
         if isinstance(hosts, str):
             hosts = [hosts]
         if not isinstance(hosts, (list, tuple)) or not hosts:
@@ -127,7 +183,12 @@ class CodonOptimizationTool(AgentTool):
         request = resolve_codon_optimization_request(
             "Please perform codon optimization for " + " and ".join(map(str, hosts))
         )
-        selected = [self._candidate(value, wt_sequence) for value in context.artifacts["selected_candidates"]]
+        selected_values = artifact.data.get("selected_candidates")
+        if selected_values is None:
+            selected_values = [{"mutation": record.annotations.get("mutation") or
+                                _mutation_label(wt_sequence, record.sequence),
+                                "mutant_sequence": record.sequence} for record in mutants]
+        selected = [self._candidate(value, wt_sequence) for value in selected_values]
         result = write_codon_optimization_outputs(
             run_dir=context.run_dir,
             sequence_name=str(context.config.get("sequence_name", "enzyme")),
@@ -141,7 +202,19 @@ class CodonOptimizationTool(AgentTool):
         if result.get("csv"):
             with Path(result["csv"]).open("r", encoding="utf-8", newline="") as handle:
                 optimized = list(csv.DictReader(handle))
-        return {"optimized_cds_set": optimized, "codon_optimization_result": result}
+        output = artifact.clone()
+        output.data["optimized_cds_set"] = optimized
+        output.data["codon_optimization_result"] = result
+        output.records.extend(
+            BioRecord(
+                id=str(row.get("name", f"cds_{index}")),
+                sequence=str(row["optimized_cds_with_stop"]),
+                molecule_type="dna",
+                annotations={"host": row.get("organism"), "mutation": row.get("mutation")},
+            )
+            for index, row in enumerate(optimized, start=1)
+        )
+        return {"artifact": output}
 
 
 def register_configured_tools(registry, config: dict) -> list[str]:

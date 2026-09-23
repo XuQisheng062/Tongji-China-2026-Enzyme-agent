@@ -180,3 +180,30 @@ def test_visualization_and_bilingual_markdown(tmp_path: Path):
     assert "Candidate cards" in en_text
     assert "Pareto optimal" in en_text
     assert "A1C is the strongest overall candidate." in en_text
+
+
+def test_report_prefers_multi_round_lineage(tmp_path: Path):
+    selected = tmp_path / "03_selected_topk.csv"
+    with selected.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["mutation", "lineage", "position", "final_score"],
+        )
+        writer.writeheader()
+        writer.writerow({
+            "mutation": "Q191L",
+            "lineage": "L375H+Q191L",
+            "position": 191,
+            "final_score": 0.9,
+        })
+    report = build_markdown_report(
+        run_dir=tmp_path,
+        analysis_text="",
+        figure_paths=[],
+        selected_csv=selected,
+        user_request=None,
+        language="en",
+    )
+    text = report.read_text(encoding="utf-8")
+    assert "L375H+Q191L" in text
+    assert "### #1 Q191L" not in text

@@ -45,6 +45,15 @@ class EnzGFMAdapter:
         timeout: int,
         force_cpu: bool,
     ) -> dict[str, float]:
+        components_by_mutation = {
+            mutation: [part.strip() for part in mutation.split(":") if part.strip()]
+            for mutation in mutations
+        }
+        component_mutations = list(dict.fromkeys(
+            component
+            for components in components_by_mutation.values()
+            for component in components
+        ))
         work_dir.mkdir(parents=True, exist_ok=True)
         input_dir = work_dir / "input"
         output_dir = work_dir / "output"
@@ -54,7 +63,7 @@ class EnzGFMAdapter:
         with in_csv.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["Sequence", "mutant"])
             writer.writeheader()
-            for m in mutations:
+            for m in component_mutations:
                 # Upstream point-mutation code groups on Sequence and scores each mutation on the WT logits.
                 writer.writerow({"Sequence": wt_sequence, "mutant": m})
 
@@ -85,7 +94,7 @@ class EnzGFMAdapter:
                 raise RuntimeError(f"\u65e0\u6cd5\u5b9a\u4f4d EnzGFM \u8f93\u51fa\u6587\u4ef6: {processed}")
             out_csv = processed[0]
 
-        scores: dict[str, float] = {}
+        component_scores: dict[str, float] = {}
         with out_csv.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             fields = reader.fieldnames or []
@@ -96,8 +105,11 @@ class EnzGFMAdapter:
                 vals = [float(row[c]) for c in pred_cols if row.get(c) not in (None, "")]
                 if not vals:
                     continue
-                scores[row["mutant"]] = sum(vals) / len(vals)
-        missing = [m for m in mutations if m not in scores]
+                component_scores[row["mutant"]] = sum(vals) / len(vals)
+        missing = [m for m in component_mutations if m not in component_scores]
         if missing:
             raise RuntimeError(f"EnzGFM \u672a\u8fd4\u56de {len(missing)} \u4e2a\u7a81\u53d8\u5206\u6570\uff1b\u793a\u4f8b: {missing[:10]}")
-        return scores
+        return {
+            mutation: sum(component_scores[component] for component in components)
+            for mutation, components in components_by_mutation.items()
+        }

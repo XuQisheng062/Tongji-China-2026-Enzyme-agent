@@ -9,7 +9,9 @@ executes Python code and never substitutes a biological prediction.
 ## Why it is useful
 
 - Add or remove tools without editing the planner or executor.
+- Let DeepSeek read the complete tool catalog and build a validated task route.
 - Select providers by capability, declared input/output artifacts, health, and priority.
+- Normalize FASTA, GenBank, CSV, JSON, and sequence-focused SBOL into one contract.
 - Accept Chinese or English requests and generate a report in the configured language.
 - Save an auditable workflow plan and execution trace for every run.
 - Fail clearly when no healthy provider can satisfy a requested capability.
@@ -43,10 +45,86 @@ The request may be Chinese or English. Set `report.language` to `zh` or `en`.
 Provide the API key through `DEEPSEEK_API_KEY` or `--ask-api-key`; secrets are
 never written to configuration or output files.
 
+## Unified files and LLM routing
+
+The flexible route uses `bioartifact/v1` as the mandatory input and output
+contract for every model tool. File conversion happens at the workflow boundary;
+model adapters may still create their own temporary FASTA or CSV files internally.
+
+Convert a biological file without running models:
+
+```bash
+fixed-enzyme-agent convert input.gb normalized.json --standard SBOL --standard RFC10
+fixed-enzyme-agent convert normalized.json candidates.fasta
+```
+
+Ask DeepSeek to read every installed tool and propose a route:
+
+```bash
+export DEEPSEEK_API_KEY="your-key"
+fixed-enzyme-agent route config/my-request.json data/input.fasta \
+  --request "Rank activity and pH, then optimize codons for E. coli" \
+  --output-dir outputs/route-1 \
+  --output-format json \
+  --output-format fasta
+```
+
+Add `--execute` to run the validated route. The route file separately lists
+installed optional tools and unavailable external tools; neither category runs
+without explicit user action. See [docs/BIOFORMATS.md](docs/BIOFORMATS.md) for
+the contract, formats, exports, and RFC handling.
+
+## Iterative mutation rounds
+
+The complete `run` command performs two rounds by default. The best three
+candidates from a round become the parent sequences for the next round, and the
+same model and hook order is repeated. Configure this without changing model
+paths:
+
+```json
+{
+  "workflow": {
+    "rounds": 2,
+    "branching_factor": 3,
+    "plugin_roots": ["../plugins"],
+    "hooks": {
+      "after_enzgfm": ["my_filter"],
+      "after_ephod": [],
+      "after_unistab": []
+    }
+  }
+}
+```
+
+Use `--rounds N` for a one-run override. Hook tools are discovered through the
+existing plug-in registry and run at the named insertion point without changing
+the EnzGFM, EpHod, and UniStab model paths or order.
+
+## Custom mutation FASTA library
+
+Set `candidate.mutation_fasta` to a protein FASTA file to replace exhaustive
+single-substitution generation in round one. Each record must have the same
+length as the configured WT sequence and contain one or more amino-acid
+substitutions. Mutation names are derived from the sequence comparison; FASTA
+headers are descriptive only. Later rounds continue normal single-substitution
+generation from the selected parent sequences.
+
+```json
+{
+  "candidate": {
+    "mutation_fasta": "../data/my_mutants.fasta"
+  }
+}
+```
+
+The one-run CLI equivalent is `--mutation-fasta /path/to/my_mutants.fasta`.
+
 ## Plug-in contract
 
 An in-process tool subclasses `AgentTool`, declares a `ToolSpec`, and implements
-`run(context)`. Register it at startup or place it in a configured plug-in root:
+`run(context)`. Routed model tools declare `artifact_contract="bioartifact/v1"`
+and exactly one `artifact` input and output. Register a tool at startup or place
+it in a configured plug-in root:
 
 ```text
 plugins/my_tool/

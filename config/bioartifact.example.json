@@ -1,0 +1,38 @@
+{
+  "schema": "bioartifact/v1",
+  "source_format": "json",
+  "standards": [
+    "SBOL",
+    "RFC10"
+  ],
+  "metadata": {
+    "project": "example-enzyme-design"
+  },
+  "records": [
+    {
+      "id": "WT",
+      "sequence": "MKW",
+      "molecule_type": "protein",
+      "description": "Reference protein",
+      "annotations": {
+        "role": "reference"
+      }
+    },
+    {
+      "id": "K2R",
+      "sequence": "MRW",
+      "molecule_type": "protein",
+      "description": "Candidate protein",
+      "annotations": {
+        "mutation": "K2R"
+      }
+    }
+  ],
+  "data": {
+    "reference_id": "WT",
+    "target_ph": 8.0,
+    "host_organisms": [
+      "Escherichia coli"
+    ]
+  }
+}

@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..bioformats import BioArtifact, SCHEMA_VERSION
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -16,6 +18,7 @@ class ToolSpec:
     outputs: tuple[str, ...]
     priority: int = 100
     properties: Mapping[str, Any] = field(default_factory=dict)
+    artifact_contract: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or any(char.isspace() for char in self.name):
@@ -33,6 +36,7 @@ class ToolSpec:
             "outputs": list(self.outputs),
             "priority": self.priority,
             "properties": dict(self.properties),
+            "artifact_contract": self.artifact_contract,
         }
 
 
@@ -60,6 +64,13 @@ class AgentTool(ABC):
         missing = [name for name in self.spec.inputs if name not in context.artifacts]
         if missing:
             raise ValueError(f"Tool {self.spec.name!r} is missing inputs: {missing}")
+        if self.spec.artifact_contract == SCHEMA_VERSION:
+            invalid = [name for name in self.spec.inputs
+                       if not isinstance(context.artifacts[name], BioArtifact)]
+            if invalid:
+                raise TypeError(
+                    f"Tool {self.spec.name!r} requires {SCHEMA_VERSION} for inputs: {invalid}"
+                )
 
     @abstractmethod
     def run(self, context: ToolContext) -> Mapping[str, Any]:
@@ -69,3 +80,10 @@ class AgentTool(ABC):
         missing = [name for name in self.spec.outputs if name not in result]
         if missing:
             raise ValueError(f"Tool {self.spec.name!r} omitted outputs: {missing}")
+        if self.spec.artifact_contract == SCHEMA_VERSION:
+            invalid = [name for name in self.spec.outputs
+                       if not isinstance(result[name], BioArtifact)]
+            if invalid:
+                raise TypeError(
+                    f"Tool {self.spec.name!r} must return {SCHEMA_VERSION} for outputs: {invalid}"
+                )

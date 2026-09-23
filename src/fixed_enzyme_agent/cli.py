@@ -38,6 +38,14 @@ def _apply_run_overrides(args, cfg: dict) -> None:
     report_lang = getattr(args, "report_lang", None)
     if report_lang:
         cfg.setdefault("report", {})["language"] = report_lang
+    rounds = getattr(args, "rounds", None)
+    if rounds is not None:
+        cfg.setdefault("workflow", {})["rounds"] = rounds
+    mutation_fasta = getattr(args, "mutation_fasta", None)
+    if mutation_fasta:
+        cfg.setdefault("candidate", {})["mutation_fasta"] = str(
+            Path(mutation_fasta).expanduser().resolve()
+        )
 
 
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
@@ -65,6 +73,11 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
         "--report-lang",
         choices=["zh", "en"],
         help="Markdown/DeepSeek \u5206\u6790\u8f93\u51fa\u8bed\u8a00\uff1b\u8986\u76d6 config.report.language",
+    )
+    parser.add_argument("--rounds", type=int, help="Override workflow.rounds for this run")
+    parser.add_argument(
+        "--mutation-fasta",
+        help="Use a substitution-mutant protein FASTA library in round one",
     )
 
 
@@ -99,7 +112,7 @@ def main() -> None:
 
     p_plan = sub.add_parser("plan", help="Build and validate a capability-based workflow plan")
     p_plan.add_argument("--capability", action="append", required=True)
-    p_plan.add_argument("--initial-artifact", action="append", default=["protein_sequence"])
+    p_plan.add_argument("--initial-artifact", action="append", default=["artifact"])
     p_plan.add_argument("--plugin-root", action="append", default=[])
     p_plan.add_argument("--config", help="Also register built-in tools from this configuration")
     p_plan.add_argument("--request", default="")
@@ -109,7 +122,88 @@ def main() -> None:
     p_plan.add_argument("--ask-api-key", action="store_true")
     p_plan.add_argument("--base-url", default="https://api.deepseek.com")
 
+    p_convert = sub.add_parser("convert", help="Convert a biological file through bioartifact/v1")
+    p_convert.add_argument("input")
+    p_convert.add_argument("output")
+    p_convert.add_argument("--from-format")
+    p_convert.add_argument("--to-format")
+    p_convert.add_argument("--standard", action="append", default=[])
+
+    p_route = sub.add_parser("route", help="Let DeepSeek build a validated task route")
+    p_route.add_argument("config")
+    p_route.add_argument("input")
+    p_route.add_argument("--request", required=True)
+    p_route.add_argument("--output-dir", required=True)
+    p_route.add_argument("--output-format", action="append", default=["json"])
+    p_route.add_argument("--standard", action="append", default=[])
+    p_route.add_argument("--plugin-root", action="append", default=[])
+    p_route.add_argument("--model", default="deepseek-v4-flash")
+    p_route.add_argument("--api-key")
+    p_route.add_argument("--ask-api-key", action="store_true")
+    p_route.add_argument("--base-url", default="https://api.deepseek.com")
+    p_route.add_argument("--execute", action="store_true")
+
     args = parser.parse_args()
+
+    if args.command == "convert":
+        from .bioformats import BioFormatConverter
+
+        converter = BioFormatConverter()
+        artifact = converter.load(
+            args.input, format_name=args.from_format, standards=args.standard
+        )
+        output = converter.dump(artifact, args.output, format_name=args.to_format)
+        _print_json({"schema": artifact.schema, "records": len(artifact.records), "output": str(output)})
+        return
+
+    if args.command == "route":
+        from .bioformats import BioFormatConverter
+        from .executor import WorkflowExecutor
+        from .llm.deepseek import DeepSeekClient
+        from .planner import WorkflowPlanner
+        from .tools import ToolRegistry, register_configured_tools
+
+        cfg = load_config(args.config)
+        converter = BioFormatConverter()
+        artifact = converter.load(args.input, standards=args.standard)
+        registry = ToolRegistry()
+        register_configured_tools(registry, cfg)
+        registry.discover(Path(root) for root in (args.plugin_root or cfg.get("workflow", {}).get("plugin_roots", [])))
+        key = args.api_key or os.environ.get("DEEPSEEK_API_KEY")
+        if not key and args.ask_api_key:
+            key = getpass.getpass("DeepSeek API key: ")
+        client = DeepSeekClient(api_key=key, base_url=args.base_url)
+        route = WorkflowPlanner(registry).route_request(
+            args.request,
+            client=client,
+            model=args.model,
+            input_summary={
+                "source_format": artifact.source_format,
+                "record_count": len(artifact.records),
+                "molecule_types": sorted({record.molecule_type for record in artifact.records}),
+                "standards": artifact.standards,
+                "data_keys": sorted(artifact.data),
+            },
+            output_formats=list(dict.fromkeys(args.output_format)),
+        )
+        output_dir = Path(args.output_dir).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        converter.dump(artifact, output_dir / "normalized_input.json", format_name="json")
+        (output_dir / "task_route.json").write_text(
+            json.dumps(route.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        result = {"route": route.to_dict(), "route_file": str(output_dir / "task_route.json")}
+        if args.execute:
+            execution = WorkflowExecutor(registry).execute_and_export(
+                route.plan,
+                config=cfg,
+                run_dir=output_dir / "execution",
+                input_artifact=artifact,
+                output_formats=list(dict.fromkeys(args.output_format)),
+            )
+            result["outputs"] = execution["outputs"]
+        _print_json(result)
+        return
 
     if args.command in {"tools", "plan"}:
         from .planner import GoalSpec, WorkflowPlanner

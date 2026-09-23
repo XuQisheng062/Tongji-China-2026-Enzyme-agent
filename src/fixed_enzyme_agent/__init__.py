@@ -1,3 +1,7 @@
 """Fixed enzyme mutation agent."""
 
-__version__ = "0.5.0"
+from .bioformats import BioArtifact, BioFormatConverter, BioRecord
+
+__version__ = "0.6.0"
+
+__all__ = ["BioArtifact", "BioFormatConverter", "BioRecord", "__version__"]

@@ -13,10 +13,11 @@ from .codon_optimization import resolve_codon_optimization_request, write_codon_
 from .io_utils import write_candidates_csv, write_json
 from .markdown_report import build_markdown_report
 from .mutation_analysis import annotate_candidates, mark_pareto_optimal, write_mutation_features_csv
-from .mutations import apply_mutation, generate_single_substitutions
+from .mutations import apply_mutation, generate_single_substitutions, load_single_substitution_fasta
 from .runner import build_env
 from .scoring import rank_candidates
 from .types import Candidate
+from .tools import ToolContext, ToolRegistry
 from .visualization import generate_visualizations
 
 
@@ -79,6 +80,147 @@ class FixedEnzymeWorkflow:
             m["unistab"]["python"],
             m["unistab"]["checkpoint"],
         )
+        self.tool_registry = ToolRegistry()
+        self.tool_registry.discover(cfg.get("workflow", {}).get("plugin_roots", []))
+
+    def _run_hooks(
+        self,
+        point: str,
+        *,
+        cfg: dict,
+        work_dir: Path,
+        artifacts: dict,
+    ) -> list[dict]:
+        trace = []
+        names = cfg.get("workflow", {}).get("hooks", {}).get(point, [])
+        for index, name in enumerate(names, start=1):
+            tool = self.tool_registry.get(str(name))
+            health = tool.healthcheck()
+            if not health.available:
+                raise RuntimeError(f"Hook tool {name!r} is unavailable: {list(health.details)}")
+            step_id = f"{point}_{index}_{name}"
+            context = ToolContext(work_dir, cfg, artifacts, step_id)
+            tool.validate_input(context)
+            output = dict(tool.run(context))
+            tool.validate_output(output)
+            artifacts.update(output)
+            trace.append({"point": point, "tool": name, "outputs": list(output)})
+        return trace
+
+    def _evaluate_parent_before_unistab(
+        self,
+        *,
+        cfg: dict,
+        parent_id: str,
+        parent_sequence: str,
+        round_number: int,
+        work_dir: Path,
+        env: dict[str, str],
+        timeout: int,
+    ) -> tuple[list[Candidate], float, list[dict], dict]:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        mutation_fasta = cfg["candidate"].get("mutation_fasta")
+        if round_number == 1 and parent_id == "WT" and mutation_fasta:
+            mutant_sequences = load_single_substitution_fasta(
+                mutation_fasta,
+                parent_sequence,
+                allowed_positions=cfg["candidate"].get("allowed_positions"),
+                excluded_positions=cfg["candidate"].get("excluded_positions"),
+            )
+            mutations = list(mutant_sequences)
+        else:
+            mutations = generate_single_substitutions(
+                parent_sequence,
+                allowed_positions=cfg["candidate"].get("allowed_positions"),
+                excluded_positions=cfg["candidate"].get("excluded_positions"),
+            )
+            mutant_sequences = {
+                mutation: apply_mutation(parent_sequence, mutation)
+                for mutation in mutations
+            }
+        activity = self.enzgfm.score_mutations(
+            parent_sequence,
+            mutations,
+            work_dir=work_dir / "enzgfm_scan",
+            env=env,
+            timeout=timeout,
+            force_cpu=self.force_cpu,
+        )
+        scan_sorted = sorted(mutations, key=lambda value: activity[value], reverse=True)
+        with (work_dir / "01_enzgfm_full_scan.csv").open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["mutation", "activity_proxy"])
+            writer.writerows((mutation, activity[mutation]) for mutation in scan_sorted)
+        pool = scan_sorted[: min(int(cfg["candidate"]["top_k"]), len(scan_sorted))]
+        candidates = []
+        for mutation in pool:
+            lineage = mutation if parent_id == "WT" else f"{parent_id}+{mutation}"
+            candidate = Candidate(
+                mutation=mutation,
+                wt_sequence=parent_sequence,
+                mutant_sequence=mutant_sequences[mutation],
+                activity_proxy=activity[mutation],
+                round_number=round_number,
+                parent_id=parent_id,
+                lineage=lineage,
+            )
+            candidates.append(candidate)
+        annotate_candidates(candidates)
+
+        artifacts = {
+            "protein_sequence": parent_sequence,
+            "mutation_list": mutations,
+            "candidates": candidates,
+            "activity_scores": activity,
+        }
+        hook_trace = self._run_hooks(
+            "after_enzgfm", cfg=cfg, work_dir=work_dir / "hooks", artifacts=artifacts
+        )
+
+        ph_input = {"WT": parent_sequence}
+        ph_input.update({candidate.lineage: candidate.mutant_sequence for candidate in candidates})
+        ph = self.ephod.predict(
+            ph_input, work_dir=work_dir / "ephod", env=env, timeout=timeout
+        )
+        wt_ph = ph["WT"]
+        for candidate in candidates:
+            candidate.ph_opt = ph[candidate.lineage]
+            candidate.delta_ph_from_wt = candidate.ph_opt - wt_ph
+        artifacts.update({"protein_sequences": ph_input, "ph_predictions": ph})
+        hook_trace.extend(self._run_hooks(
+            "after_ephod", cfg=cfg, work_dir=work_dir / "hooks", artifacts=artifacts
+        ))
+
+        return candidates, wt_ph, hook_trace, artifacts
+
+    def _predict_round_stability(
+        self,
+        *,
+        cfg: dict,
+        candidates: list[Candidate],
+        round_dir: Path,
+        env: dict[str, str],
+        timeout: int,
+    ) -> dict[str, float]:
+        records = [
+            {
+                "name": candidate.lineage or candidate.mutation,
+                "parent_sequence": candidate.wt_sequence,
+                "mutant_sequence": candidate.mutant_sequence or "",
+            }
+            for candidate in candidates
+        ]
+        predictions = self.unistab.predict_ddg_batch(
+            records,
+            work_dir=round_dir / "unistab",
+            env=env,
+            timeout=timeout,
+            force_cpu=self.force_cpu,
+            batch_size=int(cfg["models"]["unistab"].get("batch_size", 1)),
+        )
+        for candidate in candidates:
+            candidate.ddg = predictions[candidate.lineage or candidate.mutation]
+        return predictions
 
     def _path_preflight(self) -> None:
         errors: list[str] = []
@@ -142,6 +284,7 @@ class FixedEnzymeWorkflow:
                     "llm_parsed": parsed_request,
                     "resolved_candidate": cfg["candidate"],
                     "resolved_selection": cfg["selection"],
+                    "workflow": cfg.get("workflow", {}),
                     "codon_optimization": codon_request,
                     "report_language": report_language,
                 },
@@ -157,104 +300,88 @@ class FixedEnzymeWorkflow:
             )
             timeout = int(runtime["timeout_seconds"])
 
-            # 1) Deterministic enumeration; no model yet.
-            mutations = generate_single_substitutions(
-                seq,
-                allowed_positions=cfg["candidate"].get("allowed_positions"),
-                excluded_positions=cfg["candidate"].get("excluded_positions"),
-            )
-            report["stages"].append({"stage": STAGES[1], "count": len(mutations)})
+            workflow_cfg = cfg.get("workflow", {})
+            rounds = int(workflow_cfg.get("rounds", 2))
+            branching_factor = int(workflow_cfg.get("branching_factor", 3))
+            parents = [("WT", seq)]
+            round_summaries = []
+            ranked: list[Candidate] = []
+            selected: list[Candidate] = []
+            wt_ph = 0.0
 
-            # 2) EnzGFM is both candidate finder and mutation-effect proxy.
-            activity = self.enzgfm.score_mutations(
-                seq,
-                mutations,
-                work_dir=run_dir / "enzgfm_scan",
-                env=env,
-                timeout=timeout,
-                force_cpu=self.force_cpu,
-            )
-            scan_sorted = sorted(mutations, key=lambda m: activity[m], reverse=True)
-            scan_csv = run_dir / "01_enzgfm_full_scan.csv"
-            with scan_csv.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["mutation", "activity_proxy"])
-                for mutation in scan_sorted:
-                    writer.writerow([mutation, activity[mutation]])
+            for round_number in range(1, rounds + 1):
+                round_dir = run_dir / f"round_{round_number:02d}"
+                round_dir.mkdir(parents=True, exist_ok=True)
+                candidates = []
+                hook_trace = []
+                parent_ph_values = []
+                for parent_index, (parent_id, parent_sequence) in enumerate(parents, start=1):
+                    parent_candidates, parent_ph, parent_hooks, _ = self._evaluate_parent_before_unistab(
+                        cfg=cfg,
+                        parent_id=parent_id,
+                        parent_sequence=parent_sequence,
+                        round_number=round_number,
+                        work_dir=round_dir / f"parent_{parent_index:02d}",
+                        env=env,
+                        timeout=timeout,
+                    )
+                    candidates.extend(parent_candidates)
+                    parent_ph_values.append(parent_ph)
+                    hook_trace.extend(parent_hooks)
 
-            pool_n = min(int(cfg["candidate"]["top_k"]), len(scan_sorted))
-            pool_mutations = scan_sorted[:pool_n]
-            candidates = [
-                Candidate(mutation=m, wt_sequence=seq, activity_proxy=activity[m])
-                for m in pool_mutations
-            ]
-            for candidate in candidates:
-                candidate.mutant_sequence = apply_mutation(seq, candidate.mutation)
-            # Static amino-acid descriptors can be computed before the downstream models.
-            annotate_candidates(candidates)
-            report["stages"].append({
-                "stage": STAGES[2],
-                "pool_size": pool_n,
-                "full_scan": len(scan_sorted),
-            })
+                ddg = self._predict_round_stability(
+                    cfg=cfg,
+                    candidates=candidates,
+                    round_dir=round_dir,
+                    env=env,
+                    timeout=timeout,
+                )
+                round_artifacts = {
+                    "candidates": candidates,
+                    "mutant_sequences": {
+                        candidate.lineage or candidate.mutation: candidate.mutant_sequence
+                        for candidate in candidates
+                    },
+                    "stability_predictions": ddg,
+                }
+                hook_trace.extend(self._run_hooks(
+                    "after_unistab",
+                    cfg=cfg,
+                    work_dir=round_dir / "hooks",
+                    artifacts=round_artifacts,
+                ))
 
-            # 3) EpHod: WT + pool mutants in one FASTA/model load.
-            ph_input = {"WT": seq}
-            ph_input.update({
-                c.mutation: c.mutant_sequence
-                for c in candidates
-                if c.mutant_sequence
-            })
-            ph = self.ephod.predict(
-                ph_input,
-                work_dir=run_dir / "ephod",
-                env=env,
-                timeout=timeout,
-            )
-            wt_ph = ph["WT"]
-            for candidate in candidates:
-                candidate.ph_opt = ph[candidate.mutation]
-                candidate.delta_ph_from_wt = candidate.ph_opt - wt_ph
-            report["stages"].append({
-                "stage": STAGES[3],
-                "wt_ph": wt_ph,
-                "count": len(candidates),
-            })
+                ranked = rank_candidates(candidates, cfg["selection"])
+                mark_pareto_optimal(ranked)
+                passed = [candidate for candidate in ranked if candidate.passed]
+                selected = passed[: int(cfg["selection"]["top_k"])]
+                propagation_pool = passed or ranked
+                next_candidates = propagation_pool[:branching_factor]
+                wt_ph = parent_ph_values[0]
 
-            # 4) UniStab: batch input in original candidate order.
-            ddg = self.unistab.predict_ddg(
-                seq,
-                {
-                    c.mutation: c.mutant_sequence
-                    for c in candidates
-                    if c.mutant_sequence
-                },
-                work_dir=run_dir / "unistab",
-                env=env,
-                timeout=timeout,
-                force_cpu=self.force_cpu,
-            )
-            for candidate in candidates:
-                candidate.ddg = ddg[candidate.mutation]
-            report["stages"].append({"stage": STAGES[4], "count": len(candidates)})
+                write_candidates_csv(round_dir / "02_candidate_pool_ranked.csv", ranked)
+                write_candidates_csv(round_dir / "03_selected_topk.csv", selected)
+                write_candidates_csv(round_dir / "04_selected_for_next_round.csv", next_candidates)
+                write_mutation_features_csv(round_dir / "05_mutation_features.csv", ranked)
+                write_json(round_dir / "06_hook_trace.json", hook_trace)
 
-            # 5) Existing deterministic personalized ranking.
-            ranked = rank_candidates(candidates, cfg["selection"])
-            report["stages"].append({
-                "stage": STAGES[5],
-                "passed": sum(1 for c in ranked if c.passed),
-            })
-
-            # 6) Add 3-objective Pareto status after normalized scoring components exist.
-            mark_pareto_optimal(ranked)
-            passed = [c for c in ranked if c.passed]
-            selected = passed[: int(cfg["selection"]["top_k"])]
-            report["stages"].append({
-                "stage": STAGES[6],
-                "feature_count": len(ranked),
-                "pareto_optimal": sum(1 for c in ranked if c.pareto_optimal),
-                "selected": len(selected),
-            })
+                summary = {
+                    "round": round_number,
+                    "parents": [parent_id for parent_id, _ in parents],
+                    "candidate_count": len(candidates),
+                    "passed": len(passed),
+                    "selected": len(selected),
+                    "propagated": [candidate.lineage for candidate in next_candidates],
+                    "hook_trace": hook_trace,
+                }
+                round_summaries.append(summary)
+                report["stages"].append({"stage": "iterative_round", **summary})
+                parents = [
+                    (candidate.lineage or candidate.mutation, candidate.mutant_sequence or "")
+                    for candidate in next_candidates
+                ]
+                if round_number < rounds and not parents:
+                    raise RuntimeError(f"Round {round_number} produced no candidates for propagation")
 
             ranked_csv = run_dir / "02_candidate_pool_ranked.csv"
             selected_csv = run_dir / "03_selected_topk.csv"
@@ -262,6 +389,9 @@ class FixedEnzymeWorkflow:
             write_candidates_csv(ranked_csv, ranked)
             write_candidates_csv(selected_csv, selected)
             write_mutation_features_csv(features_csv, ranked)
+            write_json(run_dir / "01_round_summary.json", round_summaries)
+            report["rounds"] = round_summaries
+            report["round_count"] = rounds
 
             # 7) Optional codon optimization is a deterministic post-processing step.
             # Built-in hosts are offline; non-built-in hosts can query/cache Kazusa.

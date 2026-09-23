@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
 
@@ -64,3 +66,65 @@ def apply_mutation(sequence: str, mutation: str) -> str:
     if seq[pos - 1] != wt:
         raise ValueError(f"\u7a81\u53d8 {mutation} \u7684 WT \u4e0e\u8f93\u5165\u5e8f\u5217\u4e0d\u4e00\u81f4\uff1a\u5e8f\u5217\u4f4d\u7f6e {pos} \u662f {seq[pos-1]}")
     return seq[: pos - 1] + mt + seq[pos:]
+
+
+def load_single_substitution_fasta(
+    path: str | Path,
+    wt_sequence: str,
+    *,
+    allowed_positions: list[int] | None = None,
+    excluded_positions: list[int] | None = None,
+) -> dict[str, str]:
+    """Load an equal-length FASTA library containing substitution mutants."""
+    fasta_path = Path(path).expanduser().resolve()
+    if not fasta_path.is_file():
+        raise ValueError(f"Mutation FASTA does not exist: {fasta_path}")
+    wt = normalize_sequence(wt_sequence)
+    records: list[tuple[str, str]] = []
+    header: str | None = None
+    chunks: list[str] = []
+    for raw_line in fasta_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if header is not None:
+                records.append((header, "".join(chunks)))
+            header = line[1:].strip() or f"record_{len(records) + 1}"
+            chunks = []
+        else:
+            if header is None:
+                raise ValueError("Mutation FASTA sequence appears before its header")
+            chunks.append(line)
+    if header is not None:
+        records.append((header, "".join(chunks)))
+    if not records:
+        raise ValueError(f"Mutation FASTA contains no records: {fasta_path}")
+
+    allowed = set(allowed_positions) if allowed_positions else None
+    excluded = set(excluded_positions or [])
+    library: dict[str, str] = {}
+    for record_header, raw_sequence in records:
+        sequence = normalize_sequence(raw_sequence)
+        if len(sequence) != len(wt):
+            raise ValueError(
+                f"Mutation FASTA record {record_header!r} has length {len(sequence)}; "
+                f"expected {len(wt)}"
+            )
+        differences = [index for index, pair in enumerate(zip(wt, sequence), start=1) if pair[0] != pair[1]]
+        if not differences:
+            raise ValueError(
+                f"Mutation FASTA record {record_header!r} is identical to the WT sequence"
+            )
+        if allowed is not None and any(position not in allowed for position in differences):
+            continue
+        if any(position in excluded for position in differences):
+            continue
+        mutation = ":".join(
+            f"{wt[position - 1]}{position}{sequence[position - 1]}"
+            for position in differences
+        )
+        library[mutation] = sequence
+    if not library:
+        raise ValueError("Mutation FASTA has no candidates after position filtering")
+    return library

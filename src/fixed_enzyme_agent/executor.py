@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .bioformats import BioArtifact, BioFormatConverter
 from .planner import WorkflowPlan, validate_plan
 from .tools import ToolContext, ToolRegistry
 
@@ -33,3 +34,26 @@ class WorkflowExecutor:
             json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return artifacts
+
+    def execute_and_export(
+        self,
+        plan: WorkflowPlan,
+        *,
+        config: dict[str, Any],
+        run_dir: Path,
+        input_artifact: BioArtifact,
+        output_formats: list[str],
+    ) -> dict[str, Any]:
+        artifacts = self.execute(
+            plan,
+            config=config,
+            run_dir=run_dir,
+            initial_artifacts={"artifact": input_artifact},
+        )
+        result = artifacts.get("artifact")
+        if not isinstance(result, BioArtifact):
+            raise TypeError("Workflow did not return a bioartifact/v1 artifact")
+        outputs = BioFormatConverter().dump_many(
+            result, run_dir / "exports", output_formats, stem="result"
+        )
+        return {"artifact": result, "outputs": outputs}

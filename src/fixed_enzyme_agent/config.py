@@ -61,6 +61,15 @@ def validate_candidate_and_selection(data: dict[str, Any], *, strict_ph_target: 
         raise ConfigError("target_ph \u5fc5\u987b\u4f4d\u4e8e 0~14")
     if selection["ph_tolerance"] is not None and float(selection["ph_tolerance"]) <= 0:
         raise ConfigError("ph_tolerance \u5fc5\u987b > 0")
+    minimum_ph_weight = float(selection.get("minimum_ph_weight", 0.4))
+    if not 0.0 <= minimum_ph_weight <= 1.0:
+        raise ConfigError("selection.minimum_ph_weight must be between zero and one")
+
+    workflow = data.get("workflow", {})
+    if int(workflow.get("rounds", 2)) <= 0:
+        raise ConfigError("workflow.rounds must be greater than zero")
+    if int(workflow.get("branching_factor", 3)) <= 0:
+        raise ConfigError("workflow.branching_factor must be greater than zero")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -83,6 +92,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     candidate.setdefault("top_k", 64)
     candidate.setdefault("allowed_positions", None)
     candidate.setdefault("excluded_positions", [])
+    candidate.setdefault("mutation_fasta", None)
+    candidate["mutation_fasta"] = _resolve_path(candidate["mutation_fasta"], base)
 
     runtime = data.setdefault("runtime", {})
     runtime.setdefault("gpu_id", 0)
@@ -92,6 +103,19 @@ def load_config(path: str | Path) -> dict[str, Any]:
     runtime.setdefault("keep_temp", True)
     runtime.setdefault("cache_dir", "cache")
     runtime["cache_dir"] = _resolve_path(runtime["cache_dir"], base)
+
+    workflow = data.setdefault("workflow", {})
+    workflow.setdefault("rounds", 2)
+    workflow.setdefault("branching_factor", 3)
+    workflow.setdefault("plugin_roots", [])
+    workflow.setdefault("hooks", {
+        "after_enzgfm": [],
+        "after_ephod": [],
+        "after_unistab": [],
+    })
+    workflow["plugin_roots"] = [
+        _resolve_path(str(value), base) for value in workflow["plugin_roots"]
+    ]
 
     models = data["models"]
     for key in ["ephod", "enzgfm", "unistab"]:
@@ -109,6 +133,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if "checkpoint" not in models["unistab"]:
         raise ConfigError("models.unistab.checkpoint \u5fc5\u586b")
     models["unistab"]["checkpoint"] = _resolve_path(models["unistab"]["checkpoint"], base)
+    models["unistab"].setdefault("batch_size", 1)
+    if int(models["unistab"]["batch_size"]) <= 0:
+        raise ConfigError("models.unistab.batch_size must be greater than zero")
 
     selection = data["selection"]
     selection.setdefault("target_ph", None)
@@ -118,7 +145,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     selection.setdefault("stability_operator", "none")
     selection.setdefault("stability_threshold", None)
     selection.setdefault("top_k", 10)
-    selection.setdefault("weights", {"ph": 0.3, "activity": 0.4, "stability": 0.3})
+    selection.setdefault("weights", {"ph": 0.5, "activity": 0.3, "stability": 0.2})
+    selection.setdefault("minimum_ph_weight", 0.4)
 
     llm = data.setdefault("llm", {})
     llm.setdefault("enabled", False)

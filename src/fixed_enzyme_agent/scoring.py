@@ -29,6 +29,15 @@ def rank_candidates(candidates: list[Candidate], selection: dict) -> list[Candid
     target_ph = selection.get("target_ph")
     ph_tol = selection.get("ph_tolerance")
     weights = selection["weights"]
+    minimum_ph_weight = float(selection.get("minimum_ph_weight", 0.4))
+    if target_ph is not None and float(weights["ph"]) < minimum_ph_weight:
+        remaining = float(weights["activity"]) + float(weights["stability"])
+        weights = dict(weights)
+        weights["ph"] = minimum_ph_weight
+        if remaining > 0:
+            scale_other = (1.0 - minimum_ph_weight) / remaining
+            weights["activity"] = float(weights["activity"]) * scale_other
+            weights["stability"] = float(weights["stability"]) * scale_other
     denom = float(weights["ph"]) + float(weights["activity"]) + float(weights["stability"])
 
     for i, c in enumerate(candidates):
@@ -40,7 +49,9 @@ def rank_candidates(candidates: list[Candidate], selection: dict) -> list[Candid
         else:
             distance = abs(float(c.ph_opt) - float(target_ph))
             scale = float(ph_tol) if ph_tol is not None else max(1.0, float(target_ph))
-            c.ph_component = max(0.0, 1.0 - distance / scale)
+            # A smooth reciprocal penalty preserves pH discrimination even
+            # outside the hard tolerance instead of clipping every value to zero.
+            c.ph_component = 1.0 / (1.0 + (distance / scale) ** 2)
 
         c.passed = True
         c.reasons = []

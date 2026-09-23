@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fixed-enzyme-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "Typed plug-in enzyme engineering agent with validated DeepSeek workflow planning"
 readme = "README.md"
 requires-python = ">=3.10"

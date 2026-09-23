@@ -1,12 +1,23 @@
 {
   "sequence_name": "my_enzyme",
-  "sequence": "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAN",
+  "sequence": "MRNSTKTSLLLAGLCTAAQMVFVTHASAAAMNTRNTRSKQRAPFGVSSSVKPRLDLIEQAPNPAYDRHPACITLPERTCRHPLTDLEANEQLGRCEDSVKNRFDRVIPFLQVVAGIPLGLDYVTRVQELAQSSLGHTLPEELLKDNWISGHNLKGIFGYATAKALTAATEQFSRKIMSEKDDSASAIGFFLDCGFHAVDISPCADGRLKGLLPYILRLPLTAFTYRKAYAGSMFDIEDDLAQWEKNELRRYREGVPNTADQPTRYLKIAVYHFSTSDPTHSGCAAHGSNDRAALEAALTQLMKFREAVENAHCCGASIDILLIGVDTDTDAIRVHIPDSKGFLNPYRYVDNTVTYAQTLHLAPDEARVIIHEAILNANRSDGWAKGNGVASEGMRRFIGQLLINNLSQIDYVVNRHGGRYPPNDIGHAERYISVGDGFDEVQIRNLAYYAHLDTVEENAIDVDVGIKIFTKLNLSRGLPIPIAIHYRYDPNVPGSRERTVVKARRIYNAIKERFSSLDEQNLLQFRLSVQAQDIGSPIEEVASA",
   "user_request": null,
-  "output_dir": "../outputs/example",
+  "output_dir": "../outputs/TSGM_5",
   "candidate": {
     "top_k": 32,
+    "mutation_fasta": "/home/xkj2006/agent/FixedEnzymeAgent/data/my_mutants.fasta",
     "allowed_positions": null,
     "excluded_positions": []
+  },
+  "workflow": {
+    "rounds": 1,
+    "branching_factor": 3,
+    "plugin_roots": [],
+    "hooks": {
+      "after_enzgfm": [],
+      "after_ephod": [],
+      "after_unistab": []
+    }
   },
   "models": {
     "ephod": {
@@ -21,7 +32,8 @@
     "unistab": {
       "repo": "../external/UniStab",
       "python": "../external/UniStab/.env/bin/python",
-      "checkpoint": "../external/UniStab/checkpoints/model.ckpt"
+      "checkpoint": "../external/UniStab/checkpoints/model.ckpt",
+      "batch_size": 1
     }
   },
   "selection": {
@@ -32,10 +44,11 @@
     "stability_operator": "none",
     "stability_threshold": null,
     "weights": {
-      "ph": 0.3,
-      "activity": 0.4,
-      "stability": 0.3
+      "ph": 0.5,
+      "activity": 0.3,
+      "stability": 0.2
     },
+    "minimum_ph_weight": 0.2,
     "top_k": 10
   },
   "llm": {
@@ -44,7 +57,7 @@
     "parameter_parsing": true,
     "result_analysis": true,
     "parameter_model": "deepseek-v4-flash",
-    "analysis_model": "deepseek-v4-pro",
+    "analysis_model": "deepseek-v4-flash",
     "thinking": true,
     "reasoning_effort": "high",
     "max_tokens": 4000,

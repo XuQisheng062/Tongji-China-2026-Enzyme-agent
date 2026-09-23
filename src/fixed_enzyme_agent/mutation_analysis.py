@@ -116,7 +116,11 @@ def annotate_mutation_features(candidate: Candidate) -> Candidate:
 
 def annotate_candidates(candidates: list[Candidate]) -> list[Candidate]:
     for candidate in candidates:
-        annotate_mutation_features(candidate)
+        # Aggregate substitutions keep their full mutation label, while the
+        # single-residue descriptor fields remain empty because one position
+        # cannot represent a multi-site mutant.
+        if ":" not in candidate.mutation:
+            annotate_mutation_features(candidate)
     return candidates
 
 

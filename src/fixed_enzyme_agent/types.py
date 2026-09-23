@@ -44,5 +44,10 @@ class Candidate:
     conservative_substitution: Optional[bool] = None
     pareto_optimal: bool = False
 
+    # Iterative mutation lineage. Kept at the end for positional compatibility.
+    round_number: int = 1
+    parent_id: str = "WT"
+    lineage: Optional[str] = None
+
     def to_dict(self) -> dict:
         return asdict(self)

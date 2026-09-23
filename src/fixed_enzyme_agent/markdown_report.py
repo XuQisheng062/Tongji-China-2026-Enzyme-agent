@@ -112,6 +112,17 @@ def _bool_text(value, language: str) -> str:
     return text["yes"] if flag else text["no"]
 
 
+def _mutation_label(row, fallback: str = "") -> str:
+    """Prefer the complete multi-round lineage over the last local mutation."""
+    lineage = row.get("lineage")
+    if lineage is not None and not pd.isna(lineage) and str(lineage).strip():
+        return str(lineage).strip()
+    mutation = row.get("mutation")
+    if mutation is not None and not pd.isna(mutation) and str(mutation).strip():
+        return str(mutation).strip()
+    return fallback
+
+
 def _selected_table(selected_csv: Path, language: str) -> str:
     text = _TEXT[language]
     try:
@@ -122,7 +133,7 @@ def _selected_table(selected_csv: Path, language: str) -> str:
         return text["no_candidates"]
 
     columns = [
-        ("mutation", text["mutation"]),
+        ("_mutation_label", text["mutation"]),
         ("activity_proxy", "activity_proxy"),
         ("ph_opt", "pH opt"),
         ("ddg", "ddG"),
@@ -130,14 +141,20 @@ def _selected_table(selected_csv: Path, language: str) -> str:
         ("pareto_optimal", text["pareto"]),
         ("final_score", text["final_score"]),
     ]
-    columns = [(key, label) for key, label in columns if key in df.columns]
+    columns = [
+        (key, label)
+        for key, label in columns
+        if key == "_mutation_label" or key in df.columns
+    ]
     header = "| " + " | ".join(label for _, label in columns) + " |"
     sep = "| " + " | ".join(["---"] * len(columns)) + " |"
     rows: list[str] = []
     for _, row in df.iterrows():
         values: list[str] = []
         for key, _ in columns:
-            if key == "pareto_optimal":
+            if key == "_mutation_label":
+                values.append(_mutation_label(row))
+            elif key == "pareto_optimal":
                 values.append(_bool_text(row[key], language))
             elif key in {"activity_proxy", "ph_opt", "ddg", "final_score"}:
                 values.append(_fmt(row[key]))
@@ -158,7 +175,7 @@ def _candidate_cards(selected_csv: Path, language: str) -> str:
 
     blocks: list[str] = []
     for rank, (_, row) in enumerate(df.iterrows(), start=1):
-        mutation = str(row.get("mutation", f"candidate-{rank}"))
+        mutation = _mutation_label(row, f"candidate-{rank}")
         pareto = _bool_text(row.get("pareto_optimal", False), language)
         blocks.extend([
             f"### #{rank} {mutation}",

@@ -7,7 +7,7 @@ from typing import Any
 @dataclass(frozen=True)
 class GoalSpec:
     capabilities: tuple[str, ...]
-    initial_artifacts: tuple[str, ...] = ("protein_sequence",)
+    initial_artifacts: tuple[str, ...] = ("artifact",)
     constraints: dict[str, Any] = field(default_factory=dict)
     interpretation: str = ""
 
@@ -52,6 +52,26 @@ class WorkflowPlan:
                 for item in raw_steps
             ),
             requested_capabilities=tuple(map(str, value.get("requested_capabilities", []))),
-            initial_artifacts=tuple(map(str, value.get("initial_artifacts", ["protein_sequence"]))),
+            initial_artifacts=tuple(map(str, value.get("initial_artifacts", ["artifact"]))),
             rationale=str(value.get("rationale", "")),
         )
+
+
+@dataclass(frozen=True)
+class TaskRoute:
+    plan: WorkflowPlan
+    interpretation: str
+    format_plan: dict[str, Any]
+    available_additions: tuple[dict[str, Any], ...] = ()
+    external_suggestions: tuple[dict[str, Any], ...] = ()
+    guidance: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "interpretation": self.interpretation,
+            "format_plan": self.format_plan,
+            "plan": self.plan.to_dict(),
+            "available_additions": list(self.available_additions),
+            "external_suggestions": list(self.external_suggestions),
+            "guidance": list(self.guidance),
+        }
