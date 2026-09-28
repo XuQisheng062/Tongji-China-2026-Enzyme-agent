@@ -10,11 +10,17 @@ from .tools import ToolContext, ToolRegistry
 
 
 class WorkflowExecutor:
-    def __init__(self, registry: ToolRegistry):
+    def __init__(self, registry: ToolRegistry, *, reflector=None):
         self.registry = registry
+        self.reflector = reflector
 
     def execute(self, plan: WorkflowPlan, *, config: dict[str, Any], run_dir: Path,
                 initial_artifacts: dict[str, Any]) -> dict[str, Any]:
+        from .verification.execution import enabled, execute_verified
+
+        if enabled(config):
+            return execute_verified(self.registry, plan, config=config, run_dir=run_dir,
+                                    initial_artifacts=initial_artifacts, reflector=self.reflector)
         validate_plan(plan, self.registry)
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "00_workflow_plan.json").write_text(

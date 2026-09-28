@@ -85,15 +85,17 @@ def run_checked(
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child_env = _apply_ca_bundle(env, cmd)
-    proc = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(cwd), env=child_env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        log_path.write_text(f"timeout_seconds={timeout}\n" + output, encoding="utf-8")
+        raise
     header = "$ " + " ".join(shlex.quote(x) for x in cmd) + "\n\n"
     log_path.write_text(header + (proc.stdout or ""), encoding="utf-8")
     if proc.returncode != 0:

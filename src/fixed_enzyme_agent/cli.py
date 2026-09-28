@@ -14,7 +14,7 @@ def _print_json(obj) -> None:
 
 
 def _resolve_api_key(args, cfg: dict) -> str | None:
-    llm_enabled = bool(cfg.get("llm", {}).get("enabled", False))
+    llm_enabled = bool(cfg.get("llm", {}).get("enabled", False) or cfg.get("reflection", {}).get("enabled", False))
     if not llm_enabled:
         return None
     if getattr(args, "api_key", None):
@@ -27,6 +27,8 @@ def _resolve_api_key(args, cfg: dict) -> str | None:
 
 
 def _apply_run_overrides(args, cfg: dict) -> None:
+    if getattr(args, "reflection", False):
+        cfg.setdefault("reflection", {})["enabled"] = True
     request = getattr(args, "request", None)
     if request:
         cfg["user_request"] = request
@@ -49,6 +51,7 @@ def _apply_run_overrides(args, cfg: dict) -> None:
 
 
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--reflection", action="store_true", help="Enable verifier-gated reflection")
     parser.add_argument(
         "--request",
         help="\u81ea\u7136\u8bed\u8a00\u7b5b\u9009\u76ee\u6807\uff1b\u63d0\u4f9b\u540e\u81ea\u52a8\u542f\u7528 DeepSeek \u53c2\u6570\u89e3\u6790",
@@ -142,6 +145,7 @@ def main() -> None:
     p_route.add_argument("--ask-api-key", action="store_true")
     p_route.add_argument("--base-url", default="https://api.deepseek.com")
     p_route.add_argument("--execute", action="store_true")
+    p_route.add_argument("--reflection", action="store_true")
 
     args = parser.parse_args()
 
@@ -164,6 +168,9 @@ def main() -> None:
         from .tools import ToolRegistry, register_configured_tools
 
         cfg = load_config(args.config)
+        cfg["user_request"] = args.request
+        if args.reflection:
+            cfg.setdefault("reflection", {})["enabled"] = True
         converter = BioFormatConverter()
         artifact = converter.load(args.input, standards=args.standard)
         registry = ToolRegistry()
@@ -185,6 +192,7 @@ def main() -> None:
                 "data_keys": sorted(artifact.data),
             },
             output_formats=list(dict.fromkeys(args.output_format)),
+            defer_execution_validation=bool(cfg.get("reflection", {}).get("enabled") and args.execute),
         )
         output_dir = Path(args.output_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -194,7 +202,9 @@ def main() -> None:
         )
         result = {"route": route.to_dict(), "route_file": str(output_dir / "task_route.json")}
         if args.execute:
-            execution = WorkflowExecutor(registry).execute_and_export(
+            from .verification import LLMReflector
+
+            execution = WorkflowExecutor(registry, reflector=LLMReflector(client, args.model)).execute_and_export(
                 route.plan,
                 config=cfg,
                 run_dir=output_dir / "execution",

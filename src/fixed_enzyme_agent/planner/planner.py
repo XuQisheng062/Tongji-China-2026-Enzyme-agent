@@ -77,6 +77,7 @@ class WorkflowPlanner:
         model: str,
         input_summary: dict[str, Any],
         output_formats: list[str],
+        defer_execution_validation: bool = False,
     ) -> TaskRoute:
         if not user_request.strip():
             raise ValueError("user_request must not be empty")
@@ -138,6 +139,8 @@ Required JSON structure:
         plan_raw["initial_artifacts"] = ["artifact"]
         plan = WorkflowPlan.from_dict(plan_raw)
         for step in plan.steps:
+            if defer_execution_validation:
+                break
             spec = self.registry.get(step.tool).spec
             if (spec.artifact_contract != SCHEMA_VERSION or
                     spec.inputs != ("artifact",) or spec.outputs != ("artifact",)):
@@ -145,7 +148,8 @@ Required JSON structure:
                     f"Routed tool {spec.name!r} does not satisfy the "
                     f"{SCHEMA_VERSION} input/output contract"
                 )
-        validate_plan(plan, self.registry)
+        if not defer_execution_validation:
+            validate_plan(plan, self.registry)
 
         additions = raw.get("available_additions", [])
         if not isinstance(additions, list):

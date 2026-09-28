@@ -5,17 +5,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MAX_BYTES = 50 * 1024 * 1024
+MAX_BYTES = 50_000_000
 TEXT_SUFFIXES = {".py", ".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".sh"}
-IGNORED_PARTS = {".git", ".venv", "cache", "outputs", "__pycache__"}
+IGNORED_PARTS = {".git", ".venv", "cache", "outputs", "results", "__pycache__"}
 
 
 def repository_files() -> list[Path]:
     try:
         output = subprocess.check_output(
-            ["git", "ls-files"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
         )
-        return [ROOT / line for line in output.splitlines() if line]
+        return sorted({ROOT / line for line in output.splitlines() if line and (ROOT / line).is_file()})
     except (subprocess.CalledProcessError, FileNotFoundError):
         return [path for path in ROOT.rglob("*") if path.is_file() and not (
             set(path.relative_to(ROOT).parts) & IGNORED_PARTS
@@ -29,6 +29,9 @@ def main() -> None:
     non_ascii: list[str] = []
     for path in files:
         if path.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        # User-requested documentation is Chinese; executable sources and configs remain ASCII.
+        if path.suffix.lower() == ".md" or path.relative_to(ROOT).parts[0] == "docs":
             continue
         try:
             value = path.read_text(encoding="utf-8")

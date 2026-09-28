@@ -9,6 +9,7 @@ external/*/.gcc9/
 
 cache/
 outputs/
+results/
 wheels/
 
 *.ckpt

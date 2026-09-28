@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,34 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ConfigError(f"\u914d\u7f6e\u7f3a\u5c11\u5b57\u6bb5: {missing}")
 
     data["sequence"] = normalize_sequence(data["sequence"])
+    reflection = data.setdefault("reflection", {})
+    reflection.setdefault("enabled", False)
+    reflection.setdefault("max_retries", 2)
+    if type(reflection["enabled"]) is not bool:
+        raise ConfigError("reflection.enabled must be boolean")
+    if type(reflection["max_retries"]) is not int or reflection["max_retries"] < 0:
+        raise ConfigError("reflection.max_retries must be a non-negative integer")
+    verification = data.setdefault("verification", {})
+    verification.setdefault("enabled", False)
+    verification.setdefault("required_capabilities", [])
+    verification.setdefault("constraints", {})
+    if type(verification["enabled"]) is not bool:
+        raise ConfigError("verification.enabled must be boolean")
+    if not isinstance(verification["required_capabilities"], list) or not all(
+            isinstance(item, str) for item in verification["required_capabilities"]):
+        raise ConfigError("verification.required_capabilities must be a string array")
+    if not isinstance(verification["constraints"], dict):
+        raise ConfigError("verification.constraints must be an object")
+    for field, rules in verification["constraints"].items():
+        if field not in {"activity_proxy", "ph_opt", "ddg"} or not isinstance(rules, dict):
+            raise ConfigError(f"Unsupported verification constraint: {field}")
+        for operator, threshold in rules.items():
+            if (operator not in {"gt", "ge", "lt", "le", "eq"} or
+                    type(threshold) not in {int, float} or not math.isfinite(threshold)):
+                raise ConfigError(f"Invalid verification constraint: {field}.{operator}")
+    if "max_timeout_seconds" in reflection and (type(reflection["max_timeout_seconds"]) is not int or
+                                               reflection["max_timeout_seconds"] <= 0):
+        raise ConfigError("reflection.max_timeout_seconds must be a positive integer")
     data.setdefault("sequence_name", "enzyme")
     data.setdefault("user_request", None)
     data.setdefault("output_dir", "outputs/run")

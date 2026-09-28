@@ -1,0 +1,16 @@
+[
+  {
+    "request": "Evaluate activity, optimum pH and stability of the supplied candidates",
+    "input": "bioartifact.example.json",
+    "plan": {
+      "requested_capabilities": ["activity_ranking", "ph_prediction", "stability_prediction"],
+      "initial_artifacts": ["artifact"],
+      "rationale": "Frozen plan shared by both ablation arms",
+      "steps": [
+        {"id": "activity", "tool": "enzgfm", "depends_on": []},
+        {"id": "ph", "tool": "ephod", "depends_on": ["activity"]},
+        {"id": "stability", "tool": "unistab", "depends_on": ["ph"]}
+      ]
+    }
+  }
+]

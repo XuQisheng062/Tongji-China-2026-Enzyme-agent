@@ -82,6 +82,19 @@ class FixedEnzymeWorkflow:
         )
         self.tool_registry = ToolRegistry()
         self.tool_registry.discover(cfg.get("workflow", {}).get("plugin_roots", []))
+        self.verification_gate = None
+
+    def _prediction(self, name, expected_keys, work_dir, timeout, call):
+        if getattr(self, "verification_gate", None) is None:
+            return call(timeout, work_dir)
+        from .verification.execution import guarded_prediction
+
+        return guarded_prediction(
+            self.verification_gate, name=name, step_id=str(work_dir),
+            arguments={"timeout_seconds": timeout}, expected_keys=expected_keys,
+            call=lambda arguments, retry: call(arguments["timeout_seconds"],
+                                               work_dir / f"attempt_{retry}"),
+        )
 
     def _run_hooks(
         self,
@@ -138,13 +151,11 @@ class FixedEnzymeWorkflow:
                 mutation: apply_mutation(parent_sequence, mutation)
                 for mutation in mutations
             }
-        activity = self.enzgfm.score_mutations(
-            parent_sequence,
-            mutations,
-            work_dir=work_dir / "enzgfm_scan",
-            env=env,
-            timeout=timeout,
-            force_cpu=self.force_cpu,
+        activity = self._prediction(
+            "enzgfm", mutations, work_dir / "enzgfm_scan", timeout,
+            lambda deadline, directory: self.enzgfm.score_mutations(
+                parent_sequence, mutations, work_dir=directory, env=env,
+                timeout=deadline, force_cpu=self.force_cpu),
         )
         scan_sorted = sorted(mutations, key=lambda value: activity[value], reverse=True)
         with (work_dir / "01_enzgfm_full_scan.csv").open("w", encoding="utf-8", newline="") as handle:
@@ -179,8 +190,10 @@ class FixedEnzymeWorkflow:
 
         ph_input = {"WT": parent_sequence}
         ph_input.update({candidate.lineage: candidate.mutant_sequence for candidate in candidates})
-        ph = self.ephod.predict(
-            ph_input, work_dir=work_dir / "ephod", env=env, timeout=timeout
+        ph = self._prediction(
+            "ephod", list(ph_input), work_dir / "ephod", timeout,
+            lambda deadline, directory: self.ephod.predict(
+                ph_input, work_dir=directory, env=env, timeout=deadline),
         )
         wt_ph = ph["WT"]
         for candidate in candidates:
@@ -210,13 +223,12 @@ class FixedEnzymeWorkflow:
             }
             for candidate in candidates
         ]
-        predictions = self.unistab.predict_ddg_batch(
-            records,
-            work_dir=round_dir / "unistab",
-            env=env,
-            timeout=timeout,
-            force_cpu=self.force_cpu,
-            batch_size=int(cfg["models"]["unistab"].get("batch_size", 1)),
+        predictions = self._prediction(
+            "unistab", [r["name"] for r in records], round_dir / "unistab", timeout,
+            lambda deadline, directory: self.unistab.predict_ddg_batch(
+                records, work_dir=directory, env=env, timeout=deadline,
+                force_cpu=self.force_cpu,
+                batch_size=int(cfg["models"]["unistab"].get("batch_size", 1))),
         )
         for candidate in candidates:
             candidate.ddg = predictions[candidate.lineage or candidate.mutation]
@@ -238,6 +250,7 @@ class FixedEnzymeWorkflow:
         )
 
     def run(self) -> dict:
+        self.verification_gate = None
         cfg = copy.deepcopy(self.cfg)
         base_out_dir = Path(cfg["output_dir"])
         run_dir = create_try_dir(base_out_dir)
@@ -273,6 +286,20 @@ class FixedEnzymeWorkflow:
                 report["stages"].append({"stage": STAGES[0], "enabled": False})
 
             # Codon optimization is triggered deterministically from the original user request.
+            from .verification.execution import enabled
+
+            if enabled(cfg):
+                from .verification import LLMReflector, VerificationGate
+                from .verification.verifier import task_constraints
+
+                reflector = None
+                if self.deepseek_api_key:
+                    reflector = LLMReflector(self._deepseek_client(cfg), cfg["llm"]["parameter_model"])
+                self.verification_gate = VerificationGate(
+                    cfg, run_dir, reflector=reflector,
+                    task={"user_request": cfg.get("user_request"), "plan": STAGES,
+                          "constraints": task_constraints(cfg)},
+                )
             # It is intentionally independent of the LLM so DeepSeek cannot invent a host species.
             codon_request = resolve_codon_optimization_request(cfg.get("user_request"))
 
@@ -394,6 +421,16 @@ class FixedEnzymeWorkflow:
             report["round_count"] = rounds
 
             # 7) Optional codon optimization is a deterministic post-processing step.
+            if self.verification_gate is not None:
+                from .verification import Verifier
+                from .verification.verifier import task_constraints
+
+                self.verification_gate.run(
+                    {"step_id": "final_constraints", "tool": "verifier", "arguments": {}},
+                    lambda _: (None, Verifier.constraints([c.to_dict() for c in selected],
+                                                          task_constraints(cfg)), "not_called"),
+                    lambda action, verdict: [],
+                )
             # Built-in hosts are offline; non-built-in hosts can query/cache Kazusa.
             # It runs only when the user explicitly mentions codon optimization.
             codon_info = write_codon_optimization_outputs(
@@ -507,6 +544,8 @@ class FixedEnzymeWorkflow:
             (run_dir / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             raise
         finally:
+            if self.verification_gate is not None:
+                self.verification_gate.finish("success" if success else "failed", report.get("error"))
             # tryN is always retained. keep_temp only controls large raw model intermediates
             # after a successful run; failed runs keep everything for debugging.
             if success and not bool(cfg.get("runtime", {}).get("keep_temp", True)):

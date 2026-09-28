@@ -140,15 +140,28 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for planning and validation rules.
 
 ## Reproducibility and repository size
 
+本轮增加 Verifier-Gated Failure-Triggered Reflection。`run` 和 `route --execute`
+可使用 `--reflection` 开启，默认关闭，修复预算默认为整次运行两次。
+只有程序验证失败且存在白名单修复时才调用反思；不会加入 memory、模型训练或 RL。
+中文说明见 [服务器指南](docs/server_run_guide.md)、[Docker 指南](docs/docker_guide.md)
+和 [方法与实验说明](docs/verifier_reflection_design.md)。
+
+```bash
+python experiments/run_verifier_reflection_ablation.py --mode offline \
+  --max-tasks 2 --seed 42 --output-dir results/smoke
+```
+
+离线实验使用测试替身，并非真实酶预测结果或真实 LLM 能力评测。
+
 ```bash
 python scripts/validate_repository.py
 python -m pytest -q
 ```
 
-The validator rejects non-English repository text, tracked files of 50 MB or
-more, and a total source tree above 50 MB. Generated outputs, caches, model
-weights, and external environments are ignored. Dependencies are bounded in
-`pyproject.toml`; releases should also publish a platform-specific lock file.
+仓库检查器检查已跟踪及未忽略的新文件，限制单文件与源代码总量低于 50,000,000 字节。
+源代码与配置保持 ASCII，本轮按要求允许中文 Markdown 和 docs 文档。
+生成结果、缓存、模型权重和外部环境不进入提交。当前依赖在 pyproject.toml 中限制版本范围；
+正式发布仍需提交经过目标平台验证的 lockfile。源代码大小检查不代表已检查远端 Git 历史体积。
 
 ## License
 
